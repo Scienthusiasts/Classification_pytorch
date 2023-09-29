@@ -100,6 +100,7 @@ class MyDataset(data.Dataset):
         # 记录数据集大小
         self.dataSize = 0      
         # 数据集类别数      
+
         self.labelsNum = len(os.listdir(os.path.join(dir, mode)))           
         # 训练/验证 
         self.mode = mode              
@@ -110,8 +111,9 @@ class MyDataset(data.Dataset):
             self.transform = self.tf.validTF
         # 遍历所有类别
         self.imgPathList, self.labelList = [], []
-
-        for idx, cat in enumerate(os.listdir(os.path.join(dir, mode))):
+        '''对类进行排序，很重要!!!，否则会造成分类时标签匹配不上导致评估的精度很低(默认按字符串,如果类是数字还需要更改)'''
+        catDirs = sorted(os.listdir(os.path.join(dir, mode)))
+        for idx, cat in enumerate(catDirs):
             catPath = os.path.join(dir, mode, cat)
             labelFiles = os.listdir(catPath)
             # 每个类别里图像数
@@ -150,7 +152,7 @@ class MyDataset(data.Dataset):
 
 # for test only
 if __name__ == '__main__':
-    train_data = MyDataset('./data/IN10', 'valid', imgSize=224)
+    train_data = MyDataset('E:/datasets/Classification/food-101/images', 'train', imgSize=224)
     print(f'数据集大小:{train_data.__len__()}')
     print(f'数据集类别数:{train_data.get_cls_num()}')
     train_data_loader = data.DataLoader(dataset = train_data, batch_size=64, shuffle=True)
@@ -159,5 +161,6 @@ if __name__ == '__main__':
     visBatch(train_data_loader)
     # 输出数据格式
     for step, batch in enumerate(train_data_loader):
+        # print(batch[0])
         print(batch[0].shape, batch[1].shape)
         break

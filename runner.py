@@ -21,21 +21,42 @@ from mynet import Model
 
 
 
+def printConfigs(modelType, DatasetDir, Epoch, BatchSize, LearningRate, pretrain, froze, imgSize, ckptSavePath, logSaveDir, mode):
+    form = [['config', 'value']]
+    if mode == 'train':
+        form.append(['模型名称(timm):', modelType])  
+        form.append(['数据集根目录(子目录是train/valid):', DatasetDir])  
+        form.append(['训练迭代轮数:', Epoch])  
+        form.append(['BatchSize:', BatchSize])  
+        form.append(['初始学习率:', LearningRate])  
+        form.append(['是否使用预训练权重初始化网络:', pretrain])  
+        form.append(['是否冻结Backbone只训练分类头:', froze])  
+        form.append(['网络接受的图像输入尺寸:', imgSize])  
+        form.append(['权重保存路径:', ckptSavePath])  
+        form.append(['训练日志保存目录:', logSaveDir])  
+        form.append(['模式:', mode])  
+        table = tabulate(form, headers='firstrow') # tablefmt='fancy_grid'
+        print(f'\n{table}')
 
 
 
 
-# 只训练分类头或只分类
-def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRate:float, pretrain:bool, imgSize:int, ckptSavePath:str, logSaveDir:str):
+
+
+
+
+# 训练模式
+def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRate:float, pretrain:bool, froze:bool, imgSize:int, ckptLoadPath, ckptSavePath:str, logSaveDir:str):
     '''把pytorch训练代码独自分装成一个函数
 
     Args:
         :param modelType:    模型名称(timm)
-        :param DatasetDir:   数据集根目录
+        :param DatasetDir:   数据集根目录(到images那一层, 子目录是train/valid)
         :param Epoch:        训练轮数
         :param BatchSize:    BatchSize
         :param LearningRate: 初始学习率
         :param pretrain:     是否使用预训练权重初始化网络
+        :param froze:        是否冻结Backbone只训练分类头
         :param imgSize:      网络接受的图像输入尺寸
         :param ckptSavePath: 权重保存路径
         :param logSaveDir:   训练日志保存目录
@@ -44,6 +65,9 @@ def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRat
         None
     '''
 
+
+    # 打印参数
+    printConfigs(modelType, DatasetDir, Epoch, BatchSize, LearningRate, pretrain, froze, imgSize, ckptSavePath, logSaveDir, mode='train')
     '''日志模块'''
     logger = logging.getLogger('runer')
     logger.setLevel(level=logging.DEBUG)
@@ -86,11 +110,11 @@ def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRat
 
     '''导入网络，定义优化器，损失函数'''
     # 加载网络
-    net = Model(catNums=cls_num, modelType=modelType, pretrain=pretrain).to(device)
+    net = Model(catNums=cls_num, modelType=modelType, loadckpt=ckptLoadPath, pretrain=pretrain, froze=froze).to(device)
     # 定义优化器(自适应学习率的带动量梯度下降方法)
-    optimizer = torch.optim.AdamW(net.parameters(), lr = LearningRate)
+    optimizer = torch.optim.Adam(net.parameters(), lr = LearningRate)
     # 使用余弦退火学习率
-    scheduler =  lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=Epoch) #  * iters 
+    scheduler =  lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=Epoch) #  T_max=Epoch * 一个Epoch里有几个Batch
     # 定义损失函数(多分类交叉熵损失)
     loss_func = nn.CrossEntropyLoss()
 
@@ -107,36 +131,41 @@ def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRat
         train_step = 0
         valid_step = 0
         
-        trainbar = tqdm(train_data_loader)
-        for batch in trainbar:
-            trainbar.set_description("train epoch %d" % epoch)
-            # [bs, channel, w, h] -> [bs, w*h, channel]
-            b_x = batch[0].to(device)
-            b_y = batch[1].squeeze().to(device)   # 标签[batch_size, 1]
-            # 前向传播
-            output = net(b_x) # [batchsize, cls_num]
-            # 计算loss
-            loss = loss_func(output, b_y)
-            # 反向传播
-            optimizer.zero_grad() # 将上一次迭代计算的梯度清零
-            loss.backward()       # 反向传播计算梯度
+        with tqdm(total=epoch,desc=f'Epoch {epoch + 1}/{Epoch}',postfix=dict,mininterval=0.3) as pbar:
+            # 一个Epoch包含几轮Batch
+            batchNum = len(train_data_loader)
+            for step, batch in enumerate(train_data_loader):
+                # [bs, channel, w, h] -> [bs, w*h, channel]
+                b_x = batch[0].to(device)
+                b_y = batch[1].squeeze().to(device)   # 标签[batch_size, 1]
+                # 前向传播
+                output = net(b_x) # [batchsize, cls_num]
+                # 计算loss
+                loss = loss_func(output, b_y)
+                # 反向传播
+                optimizer.zero_grad() # 将上一次迭代计算的梯度清零
+                loss.backward()       # 反向传播计算梯度
 
-            # 预测结果对应置信最大的那个下标
-            pre_lab = torch.argmax(output, 1)
-            # 计算一个batchsize的准确率
-            train_correct = torch.sum(pre_lab == b_y.data)  
+                # 预测结果对应置信最大的那个下标
+                pre_lab = torch.argmax(output, 1)
+                # 计算一个batchsize的准确率
+                train_correct = torch.sum(pre_lab == b_y.data)  
 
-            # 计算一个epoch的损失和精度：
-            train_loss += loss.item() * b_x.shape[0]
-            train_acc += train_correct 
-            # 记录log
-            tb_writer.add_scalar('train_loss', loss.item(), train_step)
-            tb_writer.add_scalar('train_acc', train_correct/b_x.shape[0], train_step)
-            # 更新参数
-            optimizer.step()  
-            train_step += 1    
-        # 更新学习率
-        scheduler.step() 
+                # 计算一个epoch的损失和精度：
+                train_loss += loss.item() * b_x.shape[0]
+                train_acc += train_correct 
+                # 记录log
+                tb_writer.add_scalar('train_loss', loss.item(), train_step)
+                tb_writer.add_scalar('train_acc', train_correct/b_x.shape[0], train_step)
+                # 更新参数
+                optimizer.step()  
+                train_step += 1   
+                # tqdm进度条显示
+                pbar.set_postfix(**{'iter.':f'{step+1}/{batchNum}', 'train loss':train_loss/((step+1)*b_x.shape[0]), 'lr.':scheduler.get_last_lr()[0]})
+                pbar.update(1) 
+            # 更新学习率
+            scheduler.step() 
+
 
         # 验证：
         net.eval()
@@ -180,7 +209,7 @@ def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRat
     '''结果评估'''
     DatasetDir = './data/IN10'
     net.load_state_dict(torch.load(os.path.join(logSaveDir, ckptSavePath)))
-    predList, trueList, softList = eval(DatasetDir, 32, net, 224)
+    predList, trueList, softList = eval(DatasetDir, BatchSize, net, imgSize)
     cat = os.listdir(os.path.join(DatasetDir, 'valid'))
     # 可视化混淆矩阵
     showComMatrix(trueList, predList, cat, logSaveDir)
@@ -191,6 +220,114 @@ def trainer(modelType:str, DatasetDir:str, Epoch:int, BatchSize:int, LearningRat
     # 计算每个类别的 AP, F1Score
     form = clacAP(PRs, cat)
     logger.info(f'\n{form}')
+
+
+
+
+
+
+
+
+
+
+
+# 评估模式
+def evaler(modelType:str, DatasetDir:str, BatchSize:int, imgSize:int, ckptPath:str, logSaveDir:str):
+    '''把pytorch训练代码独自分装成一个函数
+
+    Args:
+        :param modelType:    模型名称(timm)
+        :param DatasetDir:   数据集根目录(到images那一层, 子目录是train/valid)
+        :param BatchSize:    BatchSize
+        :param imgSize:      网络接受的图像输入尺寸
+        :param ckptPath:     权重路径
+        :param logSaveDir:   训练日志保存目录
+
+    Returns:
+        None
+    '''
+
+
+    # 打印参数
+    # printConfigs(modelType, DatasetDir, Epoch, BatchSize, LearningRate, pretrain, froze, imgSize, ckptSavePath, logSaveDir, mode='train')
+    '''日志模块'''
+    logger = logging.getLogger('runer')
+    logger.setLevel(level=logging.DEBUG)
+    # 日志格式
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
+    # 写入文件的日志
+    logSaveDir = os.path.join(logSaveDir, f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}")
+    if not os.path.isdir(logSaveDir):os.makedirs(logSaveDir)
+    logSavePath = os.path.join(logSaveDir, f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.txt")
+    file_handler = logging.FileHandler(logSavePath, encoding="utf-8", mode="a")
+    file_handler.setLevel(level=logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    # 终端输出的日志
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    # 'cpu'
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'CUDA/CPU: {device}')
+
+    '''导入验证集'''
+    val_data = MyDataset(DatasetDir, 'valid', imgSize=imgSize)
+    val_data_loader = Data.DataLoader(dataset = val_data, batch_size=BatchSize, shuffle=True, num_workers=2)
+    logger.info('验证集大小:   %d' % val_data.__len__())
+    cls_num = val_data.get_cls_num()
+    logger.info('数据集类别数: %d'% cls_num)
+
+    '''导入网络，损失函数'''
+    # 加载网络
+    net = Model(catNums=cls_num, modelType=modelType, loadckpt=ckptPath).to(device)
+    # 定义损失函数(多分类交叉熵损失)
+    loss_func = nn.CrossEntropyLoss()
+
+    logger.info(f'损失函数: {loss_func}')
+    logger.info('=' * 120)
+
+    '''开始训练'''
+    val_loss, val_correct, val_acc = 0, 0, 0
+    valid_step = 0
+    # 验证：
+    net.eval()
+    validbar = tqdm(val_data_loader)
+    # 验证时无需计算梯度
+    with torch.no_grad():
+        for batch in validbar:
+            val_x = batch[0].to(device)
+            val_y = batch[1].to(device).squeeze()   # [batch_size, 1]
+            # 前向传播
+            output = net(val_x)
+            # 计算loss
+            loss = loss_func(output, val_y)
+            # 预测结果对应置信最大的那个下标
+            pre_lab = torch.argmax(output, dim=1)
+            val_correct = torch.sum(pre_lab == val_y.data)  # 计算一个batchsize的准确率
+            # 计算损失和精度：
+            val_loss += loss.item() * val_x.shape[0]
+            val_acc += val_correct 
+            valid_step += 1 
+        # 可视化评估结果: 
+        log = ("valid loss:%.6f | valid accuracy:%.5f " % (val_loss / val_data.__len__(), float(val_acc)/ val_data.__len__()))
+        logger.info(log)
+
+    '''结果评估'''
+    predList, trueList, softList = eval(DatasetDir, BatchSize, net, imgSize)
+    cat = os.listdir(os.path.join(DatasetDir, 'valid'))
+    # 可视化混淆矩阵
+    showComMatrix(trueList, predList, cat, logSaveDir)
+    # 绘制PR曲线
+    PRs = drawPRCurve(cat, trueList, softList, logSaveDir)
+    # 计算每个类别的 AP, F1Score
+    form = clacAP(PRs, cat)
+    logger.info(f'\n{form}')
+
+
+
+
 
 
 
@@ -278,26 +415,31 @@ def runner():
     parser.add_argument('--mode', default='train', type=str, help='train / test')
     parser.add_argument('--model', type=str, help='timm model name')
     parser.add_argument('--img_size', default=224, type=int)
-    parser.add_argument('--ckpt_name', default='model.pt', type=str, help='checkpoint saved name')
+    parser.add_argument('--ckpt_save_name', default='model.pt', type=str, help='checkpoint saved name')
+    parser.add_argument('--ckpt_load_path', default=False, type=str, help='load checkpoint')
     parser.add_argument('--dataset', type=str,  help='dataset path')
     parser.add_argument('--eopch', default=30, type=int)
     parser.add_argument('--bs', type=int)
     parser.add_argument('--lr', default=1e-3, type=float)
     parser.add_argument('--log_dir', default='./log', type=str, help='wight, evaluation, log file etc. saved dir')
     parser.add_argument('--pretrain', type=bool, help='initialized with pretrained weight')
+    parser.add_argument('--froze', default=False, type=bool, help='initialized with pretrained weight')
 
     parser.add_argument('--result_dir', default='./result', type=str, help='save test result. required when mode is test')
     parser.add_argument('--img_path', type=str, help='required when mode is test')
     args = parser.parse_args()
     # 训练
     if args.mode == 'train':
-        trainer(args.model, args.dataset, args.eopch, args.bs, args.lr, args.pretrain, args.img_size, args.ckpt_name, args.log_dir)  
+        trainer(args.model, args.dataset, args.eopch, args.bs, args.lr, args.pretrain, args.froze, args.img_size, args.ckpt_load_path, args.ckpt_save_name, args.log_dir)  
     # 测试
     if args.mode == 'test':
-        cats = [cat for cat in os.listdir('./data/IN10/valid')]
-        tester(args.model, cats, args.img_path, args.img_size, args.ckpt_name, args.result_dir)
+        cats = [cat for cat in os.listdir(os.path.join(args.img_path, 'valid'))]
+        tester(args.model, cats, args.img_path, args.img_size, args.ckpt_load_path, args.result_dir)
+    # 评估
+    if args.mode == 'eval':
+        evaler(args.model, args.dataset, args.bs, args.img_size, args.ckpt_load_path, args.log_dir)
     else:
-        print("mode not valid. it must be 'train' or 'test'")
+        print("mode not valid. it must be 'train', 'test or 'eval'")
 
 
 
