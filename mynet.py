@@ -69,7 +69,6 @@ class Model(nn.Module):
         '''前向传播
         '''
         feat = self.backbone(x)
-        print(feat.shape)
         out = self.head(feat)
         return out
 
@@ -81,19 +80,19 @@ class Model(nn.Module):
 # for test only
 if __name__ == '__main__':
 
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # print(device)
-    # model = Model(catNums=101, modelType='mobilenetv3_large_100.ra_in1k', pretrain=False, froze=True).to(device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
+    model = Model(catNums=101, modelType='mobilenetv3_large_100.ra_in1k', pretrain=False, froze=False).to(device)
 
     
-    # # '''验证 1'''
+    # '''验证 1'''
     # print(model)
-    # # '''验证 2'''
-    # # # summary(model, input_size=[(3, 224, 224)])  
-    # # '''验证 3'''
-    # x = torch.rand((4, 3, 800, 800)).to(device)
-    # out = model(x)
-    # print(out.shape)
+    # '''验证 2'''
+    summary(model, input_size=[(3, 224, 224)])  
+    # '''验证 3'''
+    x = torch.rand((4, 3, 800, 800)).to(device)
+    out = model(x)
+    print(out.shape)
 
 
     '''导出预训练权重(去掉分类头)'''
@@ -101,15 +100,15 @@ if __name__ == '__main__':
 
 
     '''导出原始权重'''
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = timm.create_model('resnetaa50d.d_in12k', pretrained=False, features_only=True, out_indices=[3]).to(device)
-    # summary(model, input_size=[(3, 800, 800)])
-    print(model)
-    x = torch.rand((4, 3, 800, 800)).to(device)
-    out = model(x)
-    for o in out:
-        print(o.shape)
-    # torch.save(model.state_dict(), './ckpt/mobilenetv3_large_100.ra_in1k.pt')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # model = timm.create_model('resnetaa50d.d_in12k', pretrained=False, features_only=True, out_indices=[3]).to(device)
+    # # summary(model, input_size=[(3, 800, 800)])
+    # print(model)
+    # x = torch.rand((4, 3, 800, 800)).to(device)
+    # out = model(x)
+    # for o in out:
+    #     print(o.shape)
+    # # torch.save(model.state_dict(), './ckpt/mobilenetv3_large_100.ra_in1k.pt')
 
 
 
