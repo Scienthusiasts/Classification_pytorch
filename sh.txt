@@ -1,0 +1,10 @@
+
+# 训练
+python runner.py --config config.py
+python runner.py --timm_model_name mobilenetv3_large_100.ra_in1k --dataset_dir E:/datasets/Classification/food-101/images --bs 64 --lr 1e-3 --pretrain True --froze False --resume ./log/2024-01-31-16-02-07/epoch_7.pt
+
+# 验证
+python runner.py  --mode eval --timm_model_name mobilenetv3_large_100.ra_in1k --dataset E:/datasets/Classification/food-101/images --bs 1 --ckpt_load_path log/2024-02-03-00-41-01_train/best.pt
+
+# 推理
+python runner.py --mode test --timm_model_name mobilenetv3_large_100.ra_in1k --ckpt_load_path log/2024-01-31-16-51-27/best.pt --dataset_dir E:/datasets/Classification/food-101/images --img_path E:/datasets/Classification/food-101/images/valid/cheesecake/1877670.jpg --save_res_dir ./result

@@ -10,8 +10,10 @@ import torch.utils.data as Data              # pytorch的数据集模块
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import random
+import json
+import timm
 from sklearn.metrics import confusion_matrix # 各种评估指标
-from dataloader import *              # 我们自定义的数据集读取模块
 
 plt.rcParams['font.sans-serif']=['SimHei']   # 用来正常显示中文标签 
 plt.rcParams['axes.unicode_minus']=False     # 用来正常显示负号
@@ -20,8 +22,57 @@ plt.rc('font', family='Times New Roman')
 
 
 
+def normalInit(model, mean, stddev, truncated=False):
+    '''权重按高斯分布初始化
+        Args:
+            :param model:     模型实例
+            :param mean:      均值
+            :param stddev:    标准差
+            :param truncated: 截断
 
-def visBatch(dataLoader:data.DataLoader):
+        Returns:
+            None
+    '''
+    if truncated:
+        model.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)  
+    else:
+        model.weight.data.normal_(mean, stddev)
+        model.bias.data.zero_()
+
+
+
+def seed_everything(seed):
+    '''设置全局种子
+    '''
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+
+
+
+def exportWeight(modelType, saveDir):
+    '''导出预训练权重(timm下载的权重不知道什么格式)
+
+    Args:
+        :param modelType: 使用哪个模型(timm库里的模型)
+        :param saveDir:   保存目录
+
+    Returns:
+        None
+    '''
+    model = timm.create_model(modelType, pretrained=True)
+    torch.save(model.state_dict(), os.path.join(saveDir, modelType+'.pt'))
+
+
+
+
+def visBatch(dataLoader:data.DataLoader, catNames:list):
     '''可视化训练集一个batch(8x8)
     Args:
         dataLoader: torch的data.DataLoader
@@ -37,16 +88,16 @@ def visBatch(dataLoader:data.DataLoader):
         # 图像均值
         mean = np.array([0.485, 0.456, 0.406]) 
         # 标准差
-        std = np.array([[0.229, 0.224, 0.225]]) 
-        plt.figure(figsize = (6,6))
+        std = np.array([0.229, 0.224, 0.225]) 
+        plt.figure(figsize = (10,10))
         for img in np.arange(len(b_y)):
             plt.subplot(8,8,img + 1)
-            image = b_x[img,:,:,:].numpy().transpose((1,2,0))
+            image = b_x[img,:,:,:].numpy().transpose(2,1,0)
             # 由于在数据预处理时我们对数据进行了标准归一化，可视化的时候需要将其还原
             image = image * std + mean
             plt.imshow(image)
             # 在图像上方展示对应的标签
-            plt.title(b_y[img][0].numpy())   
+            plt.title(catNames[b_y[img][0].numpy()])   
             # 取消坐标轴
             plt.axis("off")           
              # 微调行间距            
@@ -54,51 +105,6 @@ def visBatch(dataLoader:data.DataLoader):
         plt.show()
 
 
-
-
-
-
-
-def eval(DatasetDir:str, BatchSize:int, net:nn.Module, imgSize:int):
-    '''得到网络在验证集的真实标签true_list, 预测标签pred_list, 置信度soft_list
-
-    Args:
-        :param DatasetDir:   数据集根目录
-        :param BatchSize:    BatchSize
-        :param net:          网络
-        :param imgSize:      图像尺寸
-
-
-
-    Returns:
-        None
-    '''
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # 记录真实标签和预测标签
-    pred_list, true_list, soft_list = [], [], []
-    # 导入验证集
-    val_data = MyDataset(DatasetDir, 'valid', imgSize=imgSize)
-    val_data_loader = Data.DataLoader(dataset = val_data, batch_size=BatchSize, shuffle=True, num_workers=2)
-    # 导入网络
-    net = net.to(device)
-    # 验证：
-    net.eval()
-
-    # 验证时无需计算梯度
-    with torch.no_grad():
-        for batch in tqdm(val_data_loader):
-            val_x = batch[0].to(device)   # [batch_size, 3, 64, 64]
-            val_y = batch[1].to(device).squeeze()   # [batch_size, 1]
-            # 前向传播
-            output = net(val_x)
-            # 预测结果对应置信最大的那个下标
-            pre_lab = torch.argmax(output, dim=1)
-            # 记录(真实标签true_list, 预测标签pred_list, 置信度soft_list)
-            true_list += list(val_y.cpu().detach())
-            pred_list += list(pre_lab.cpu().detach())
-            soft_list += list(np.array(output.softmax(dim=-1).cpu().detach()))
-
-        return np.array(pred_list), np.array(true_list), np.array(soft_list)
 
 
 
@@ -118,12 +124,14 @@ def showComMatrix(trueList, predList, cat, evalDir):
     Returns:
         None
     '''
-    # 100类正合适的大小  
-    # plt.figure(figsize=(40, 33))
-    # plt.subplots_adjust(left=0.05, right=1, bottom=0.05, top=0.99) 
-    # 10类正合适的大小
-    plt.figure(figsize=(12, 9))
-    plt.subplots_adjust(left=0.1, right=1, bottom=0.1, top=0.99) 
+    if len(cat)>=50:
+        # 100类正合适的大小  
+        plt.figure(figsize=(40, 33))
+        plt.subplots_adjust(left=0.05, right=1, bottom=0.05, top=0.99) 
+    else:
+        # 10类正合适的大小
+        plt.figure(figsize=(12, 9))
+        plt.subplots_adjust(left=0.1, right=1, bottom=0.1, top=0.99) 
 
     conf_mat = confusion_matrix(trueList, predList)
     df_cm = pd.DataFrame(conf_mat, index=cat, columns=cat)
@@ -154,6 +162,8 @@ def clacAP(PRs, cat):
         None
     '''
     form = [['catagory', 'AP', 'F1_Score']]
+    # 所有类别的平均AP与平均F1Score
+    mAP, mF1Score = 0, 0
     for i in range(len(cat)):
         PR = PRs[i]
         AP = 0
@@ -167,7 +177,12 @@ def clacAP(PRs, cat):
                 F1Score0_5 = 2 * PR[j, 0] * PR[j, 1] / (PR[j, 0] + PR[j, 1])
 
         form.append([cat[i], AP, F1Score0_5])  
-    return tabulate(form, headers='firstrow') # tablefmt='fancy_grid'
+        mAP += AP
+        mF1Score += F1Score0_5
+
+    form.append(['average', mAP / len(cat), mF1Score / len(cat)]) 
+
+    return mAP, mF1Score, tabulate(form, headers='firstrow') # tablefmt='fancy_grid'
         
 
 
@@ -205,6 +220,7 @@ def drawPRCurve(cat, trueList, softList, evalDir):
         return precision, recall, T
 
 
+
     def clacPRCurve(trueList, softList, clsNum, interval=100):
         '''所有类别下的PR曲线值
 
@@ -218,6 +234,7 @@ def drawPRCurve(cat, trueList, softList, evalDir):
             :param PRs:       不同阈值下的PR值[2, interval, cat_num]
         '''
         PRs = []
+        print('calculating PR per classes...')
         for cls in trange(clsNum):
             PR_value = [calcPRThreshold(trueList, softList, cls, i/interval) for i in range(interval+1)]
             PRs.append(np.array(PR_value))
@@ -296,23 +313,49 @@ def readLog(logPath, logDir):
 
 
 
+
+def visArgsHistory(json_dir, save_dir):
+    '''可视化训练过程中保存的参数
+
+    Args:
+        :param json_dir: 参数的json文件路径
+        :param logDir:   可视化json文件保存路径
+
+    Returns:
+        None
+    '''
+    json_path = os.path.join(json_dir, 'args_history.json')
+    with open(json_path) as json_file:
+        args = json.load(json_file)
+        for args_key in args.keys():
+            arg = args[args_key]
+            plt.plot(arg, linewidth=1)
+            plt.xlabel('Epoch')
+            plt.ylabel(args_key)
+            plt.savefig(os.path.join(save_dir, f'{args_key}.png'), dpi=200)
+            plt.clf()
+
+
+
+
 # for test only
 if __name__ == '__main__':
-    from mynet import Mobi_v3, ViT_16_224
+    from mynet import Model
 
-    DatasetDir = './data/IN10'
-    loadckpt = './log/2023-08-27-10-44-47/MobileNetv3.pt'
-    net = Mobi_v3(catNums=10, loadckpt=loadckpt, pretrain=False)
+    DatasetDir = 'E:/datasets/Classification/food-101/images'
+    net = Model(catNums=101, modelType='mobilenetv3_large_100.ra_in1k', pretrain=True)
     # 跑一遍验证集得到结果
     predList, trueList, softList = eval(DatasetDir, 32, net, 224)
-    cat = os.listdir('./data/IN10/valid')
+    cat = os.listdir(DatasetDir)
     evalDir = './log'
     # 可视化混淆矩阵
-    # showComMatrix(trueList, predList, cat, evalDir)
+    showComMatrix(trueList, predList, cat, evalDir)
     # 绘制PR曲线
     PRs = drawPRCurve(cat, trueList, softList, evalDir)
     # 绘制损失，学习率，准确率曲线
-    readLog('./log_2023-08-26-15-10-17.txt', evalDir)
+    visArgsHistory('log/2024-02-13-01-34-54_train')
     # 计算每个类别的 AP, F1Score
     clacAP(PRs, cat)
+
+
 

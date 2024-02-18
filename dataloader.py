@@ -3,11 +3,14 @@ import torch.utils.data as data              # 自定义的数据集类都需要
 from PIL import Image                        # 读取数据集
 import torch
 import torchvision.transforms as tf
+import albumentations as A
+import numpy as np
+import cv2
 
-
+from utils import seed_everything
 
 class EasyTransforms():
-    '''简单的数据预处理
+    '''简单的数据预处理(MNIST)
     '''
     def convertImg2Gray(self, image):
         '''RGB 2 GRAY
@@ -33,49 +36,50 @@ class EasyTransforms():
 
 
 class Transforms():
-    '''数据预处理
+    '''数据预处理/数据增强(基于albumentations库)
     '''
-    def _convert_image_to_rgb(self, image):
-        return image.convert("RGB")
-
-    def __init__(self, imgSize): 
-        '''
-        Args:
-            :param imgSize:     网络输入的图像尺寸
-
-        Returns:
-            None
-        '''      
-        self.imgSize = imgSize
-
-        # 训练集预处理
-        self.trainTF = tf.Compose([
-                # 依概率p = 0.5水平翻转
-                tf.RandomHorizontalFlip(),
-                # 随机10度以内旋转
-                tf.RandomRotation(10),
-                # BICUBIC双三次差值(按比例缩放, 不会变形)
-                tf.Resize(self.imgSize, interpolation=tf.InterpolationMode.BICUBIC),
-                # tf.Resize((self.imgSize,self.imgSize),  interpolation=tf.InterpolationMode.BICUBIC),
-                # 中心裁剪(正方形)
-                tf.CenterCrop(self.imgSize),
-                self._convert_image_to_rgb,
-                tf.ToTensor(),
-                tf.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-        ])
-        # 验证集预处理
-        self.validTF = tf.Compose([
-            # BICUBIC双三次差值(按比例缩放, 不会变形)
-            tf.Resize(self.imgSize, interpolation=tf.InterpolationMode.BICUBIC),
-            # tf.Resize((self.imgSize,self.imgSize),  interpolation=tf.InterpolationMode.BICUBIC),
-            # 中心裁剪(正方形)
-            tf.CenterCrop(self.imgSize),
-            self._convert_image_to_rgb,
-            tf.ToTensor(),
-            tf.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-        ])
-
-
+    def __init__(self, imgSize):
+        # 训练时增强
+        self.trainTF = A.Compose([
+                # 随机旋转
+                A.Rotate(limit=30, p=0.5),
+                # 最长边限制为imgSize
+                A.LongestMaxSize(max_size=imgSize),
+                # 随机镜像
+                A.HorizontalFlip(p=0.5),
+                # 参数：随机色调、饱和度、值变化
+                A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, always_apply=False, p=0.5),
+                # 随机明亮对比度
+                A.RandomBrightnessContrast(p=0.2),   
+                # 高斯噪声
+                A.GaussNoise(var_limit=(0.05, 0.09), p=0.4),     
+                A.OneOf([
+                    # 使用随机大小的内核将运动模糊应用于输入图像
+                    A.MotionBlur(p=0.2),   
+                    # 中值滤波
+                    A.MedianBlur(blur_limit=3, p=0.1),    
+                    # 使用随机大小的内核模糊输入图像
+                    A.Blur(blur_limit=3, p=0.1),  
+                ], p=0.2),
+                # 较短的边做padding
+                A.PadIfNeeded(imgSize, imgSize, border_mode=cv2.BORDER_CONSTANT, value=[0,0,0], p=1),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ])
+        # 验证时增强
+        self.validTF = A.Compose([
+                # 最长边限制为imgSize
+                A.LongestMaxSize(max_size=imgSize),
+                # 较短的边做padding
+                A.PadIfNeeded(imgSize, imgSize, border_mode=0, mask_value=[0,0,0]),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ])
+        # 可视化增强(只reshape)
+        self.visTF = A.Compose([
+                # 最长边限制为imgSize
+                A.LongestMaxSize(max_size=imgSize),
+                # 较短的边做padding
+                A.PadIfNeeded(imgSize, imgSize, border_mode=0, mask_value=[0,0,0]),
+            ])
 
 
 
@@ -100,15 +104,11 @@ class MyDataset(data.Dataset):
         # 记录数据集大小
         self.dataSize = 0      
         # 数据集类别数      
-
         self.labelsNum = len(os.listdir(os.path.join(dir, mode)))           
         # 训练/验证 
         self.mode = mode              
-        # 数据预处理
-        if mode=='train':
-            self.transform = self.tf.trainTF
-        if mode=='valid':
-            self.transform = self.tf.validTF
+        # 数据预处理方法
+        self.tf = Transforms(imgSize=imgSize)
         # 遍历所有类别
         self.imgPathList, self.labelList = [], []
         '''对类进行排序，很重要!!!，否则会造成分类时标签匹配不上导致评估的精度很低(默认按字符串,如果类是数字还需要更改)'''
@@ -129,9 +129,16 @@ class MyDataset(data.Dataset):
         '''   
         # 读取图片
         img = Image.open(self.imgPathList[item]).convert('RGB')     
+        img = np.array(img)
         # 获取image对应的label
-        label = self.labelList[item]                             
-        return self.transform(img), torch.LongTensor([label])
+        label = self.labelList[item]                 
+        # 数据预处理/数据增强
+        if self.mode=='train':
+            transformed = self.tf.trainTF(image=img)
+        if self.mode=='valid':
+            transformed = self.tf.validTF(image=img)          
+        img = transformed['image']    
+        return img.transpose(2,1,0), torch.LongTensor([label])
 
 
     def __len__(self):
@@ -152,15 +159,23 @@ class MyDataset(data.Dataset):
 
 # for test only
 if __name__ == '__main__':
-    train_data = MyDataset('E:/datasets/Classification/food-101/images', 'train', imgSize=224)
+    datasetDir = 'E:/datasets/Classification/food-101/images'
+    mode = 'train'
+    bs = 64
+    seed = 22
+    seed_everything(seed)
+    train_data = MyDataset(datasetDir, mode, imgSize=224)
     print(f'数据集大小:{train_data.__len__()}')
     print(f'数据集类别数:{train_data.get_cls_num()}')
-    train_data_loader = data.DataLoader(dataset = train_data, batch_size=64, shuffle=True)
+    train_data_loader = data.DataLoader(dataset = train_data, batch_size=bs, shuffle=True)
+    # 获取label name
+    catNames = sorted(os.listdir(os.path.join(datasetDir, mode)))
     # 可视化一个batch里的图像
     from utils import visBatch
-    visBatch(train_data_loader)
+    visBatch(train_data_loader, catNames)
     # 输出数据格式
     for step, batch in enumerate(train_data_loader):
-        # print(batch[0])
         print(batch[0].shape, batch[1].shape)
         break
+
+
