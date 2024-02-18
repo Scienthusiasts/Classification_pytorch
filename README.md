@@ -1,4 +1,4 @@
-# pytorch 图像分类pipeline
+# pytorch图像分类pipeline
 
 基于对`timm`库提供的模型进行微调实现图像分类
 
